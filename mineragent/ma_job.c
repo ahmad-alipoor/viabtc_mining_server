@@ -398,8 +398,10 @@ static int decode_pkg(nw_ses *ses, void *data, size_t max)
 {
     char *s = data;
     for (size_t i = 0; i < max; ++i) {
-        if (s[i] == '\n')
+        if (s[i] == '\n') {
+            log_trace("stratum frame received: bytes=%zu", i + 1);
             return i + 1;
+        }
     }
     return 0;
 }
@@ -435,13 +437,19 @@ static int on_close(nw_ses *ses)
 
 static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 {
-    json_t *request = json_loadb(data, size - 1, 0, NULL);
+    size_t payload_size = size;
+    while (payload_size > 0 && (((char *)data)[payload_size - 1] == '\n' || ((char *)data)[payload_size - 1] == '\r'))
+        payload_size--;
+    json_error_t json_error;
+    json_t *request = json_loadb(data, payload_size, 0, &json_error);
     if (request == NULL) {
+        log_error("stratum JSON decode failed: bytes=%zu line=%d column=%d text=%s", payload_size,
+                json_error.line, json_error.column, json_error.text);
         goto decode_error;
     }
 
     char *request_data = data;
-    request_data[size - 1] = '\0';
+    request_data[payload_size] = '\0';
     log_trace("peer: %s, recv: %s", nw_sock_human_addr(&ses->peer_addr), request_data);
 
     if (is_standard_stratum()) {
