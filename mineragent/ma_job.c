@@ -422,6 +422,13 @@ static void on_connect(nw_ses *ses, bool result)
 static int on_close(nw_ses *ses)
 {
     log_error("stratum server: %s close", nw_sock_human_addr(&ses->peer_addr));
+    if (is_standard_stratum()) {
+        /* Never leave downstream miners on a job whose upstream session died. */
+        agent_status = false;
+        clear_job();
+        close_all_connection();
+        log_error("standard stratum upstream lost: downstream connections closed and jobs invalidated");
+    }
     char *sock_cfg = get_sock_cfg(settings.stratum_host, settings.stratum_port);
     if (sock_cfg == NULL) {
         log_error("get_sock_cfg, host: %s", settings.stratum_host);
