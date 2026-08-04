@@ -296,7 +296,7 @@ static int send_json(nw_ses *ses, json_t *message)
 static int send_subscribe(nw_ses *ses)
 {
     json_t *message = json_object();
-    json_object_set_new(message, "id", json_integer(current_timestamp() * 1000));
+    json_object_set_new(message, "id", json_integer(is_standard_stratum() ? 1 : current_timestamp() * 1000));
     if (is_standard_stratum()) {
         json_object_set_new(message, "method", json_string("mining.subscribe"));
         json_t *params = json_array();
@@ -383,7 +383,7 @@ static int on_standard_job(json_t *params)
 static int send_authorize(nw_ses *ses)
 {
     json_t *message = json_object();
-    json_object_set_new(message, "id", json_integer(current_timestamp() * 1000 + 1));
+    json_object_set_new(message, "id", json_integer(is_standard_stratum() ? 2 : current_timestamp() * 1000 + 1));
     json_object_set_new(message, "method", json_string("mining.authorize"));
     json_t *params = json_array();
     json_array_append_new(params, json_string(settings.stratum_user));
