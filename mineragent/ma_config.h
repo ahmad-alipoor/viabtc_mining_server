@@ -38,6 +38,10 @@ struct settings {
 
     char               *stratum_host;
     int                 stratum_port;
+    char               *stratum_protocol;
+    char               *stratum_user;
+    char               *stratum_password;
+    int                 extra_nonce2_size;
     int                 worker_num;
     int                 diff_min;
     int                 diff_max;

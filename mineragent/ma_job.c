@@ -13,7 +13,8 @@
 static nw_clt *clt;
 static dict_t *job_dict;
 static struct job *curr_job;
-static uint16_t curr_job_id;
+static uint32_t curr_job_id;
+static sds upstream_extra_nonce1;
 static json_t *curr_job_message;
 static double diff1_bignum;
 static nw_timer timer;
@@ -296,6 +297,15 @@ static int send_subscribe(nw_ses *ses)
 {
     json_t *message = json_object();
     json_object_set_new(message, "id", json_integer(current_timestamp() * 1000));
+    if (is_standard_stratum()) {
+        json_object_set_new(message, "method", json_string("mining.subscribe"));
+        json_t *params = json_array();
+        json_array_append_new(params, json_string("ViaBTCMinerAgent/packpool"));
+        json_object_set_new(message, "params", params);
+        send_json(ses, message);
+        json_decref(message);
+        return 0;
+    }
     json_object_set_new(message, "method", json_string("agent.subscribe"));
 
     json_t *params = json_array();
@@ -308,6 +318,80 @@ static int send_subscribe(nw_ses *ses)
     json_decref(message);
 
     return 0;
+}
+
+static int decode_standard_job(json_t *params, struct job *job)
+{
+    if (!json_is_array(params) || json_array_size(params) < 9)
+        return -__LINE__;
+    json_t *v;
+    v = json_array_get(params, 0); if (!json_is_string(v)) return -__LINE__;
+    snprintf(job->job_id, sizeof(job->job_id), "%s", json_string_value(v));
+    job->job_id_num = strtoul(job->job_id, NULL, 16);
+    v = json_array_get(params, 1); if (!json_is_string(v)) return -__LINE__;
+    job->prevhash_hex = sdsnew(json_string_value(v));
+    sds prevhash = hex2bin(json_string_value(v));
+    if (!prevhash || sdslen(prevhash) != sizeof(job->prevhash)) { sdsfree(prevhash); return -__LINE__; }
+    memcpy(job->prevhash, prevhash, sizeof(job->prevhash));
+    sdsfree(prevhash);
+    reverse_mem(job->prevhash, sizeof(job->prevhash));
+    memcpy(job->prevhash_raw, job->prevhash, sizeof(job->prevhash_raw));
+    for (int i = 0; i < 8; ++i) reverse_mem(job->prevhash + i * 4, 4);
+
+    v = json_array_get(params, 2); if (!json_is_string(v)) return -__LINE__;
+    job->coinbase1_bin = hex2bin(json_string_value(v));
+    v = json_array_get(params, 3); if (!json_is_string(v)) return -__LINE__;
+    job->coinbase2_hex = sdsnew(json_string_value(v));
+    job->coinbase2_bin = hex2bin(json_string_value(v));
+    v = json_array_get(params, 4); if (!json_is_array(v)) return -__LINE__;
+    json_incref(v); job->merkle_json = v;
+    job->merkle_branch_count = json_array_size(v);
+    job->merkle_branch = calloc(job->merkle_branch_count, sizeof(sds));
+    for (size_t i = 0; i < job->merkle_branch_count; ++i) {
+        json_t *branch = json_array_get(v, i);
+        if (!json_is_string(branch)) return -__LINE__;
+        job->merkle_branch[i] = hex2bin(json_string_value(branch));
+        if (!job->merkle_branch[i]) return -__LINE__;
+    }
+    v = json_array_get(params, 5); if (!json_is_string(v)) return -__LINE__;
+    job->version = strtoul(json_string_value(v), NULL, 16); snprintf(job->version_hex, sizeof(job->version_hex), "%08x", job->version);
+    v = json_array_get(params, 6); if (!json_is_string(v)) return -__LINE__;
+    job->nbits = strtoul(json_string_value(v), NULL, 16);
+    v = json_array_get(params, 7); if (!json_is_string(v)) return -__LINE__;
+    job->curtime = strtoul(json_string_value(v), NULL, 16); snprintf(job->curtime_hex, sizeof(job->curtime_hex), "%08x", job->curtime);
+    job->pool_name = sdsempty(); job->coinbase_message = sdsempty(); job->coinbaseaux_bin = sdsempty(); job->name = sdsnew("standard-stratum");
+    job->coinbase_account = false; job->block_diff = 0;
+    return job->coinbase1_bin && job->coinbase2_bin ? 0 : -__LINE__;
+}
+
+static int on_standard_job(json_t *params)
+{
+    struct job *job = calloc(1, sizeof(*job));
+    if (!job || decode_standard_job(params, job) < 0) { job_free(job); return -__LINE__; }
+    json_t *clean = json_array_get(params, 8);
+    bool clean_jobs = json_is_true(clean);
+    if (clean_jobs) clear_job();
+    sds key = sdsnew(job->job_id);
+    if (dict_find(job_dict, key)) { sdsfree(key); job_free(job); return -__LINE__; }
+    dict_add(job_dict, key, job); curr_job = job; curr_job_id = job->job_id_num;
+    if (broadcast_job(job, clean_jobs) < 0) return -__LINE__;
+    last_broadcast = time(NULL); last_activity = time(NULL); last_real_job = time(NULL); agent_status = true;
+    log_info("standard stratum job: %s", job->job_id);
+    return 0;
+}
+
+static int send_authorize(nw_ses *ses)
+{
+    json_t *message = json_object();
+    json_object_set_new(message, "id", json_integer(current_timestamp() * 1000 + 1));
+    json_object_set_new(message, "method", json_string("mining.authorize"));
+    json_t *params = json_array();
+    json_array_append_new(params, json_string(settings.stratum_user));
+    json_array_append_new(params, json_string(settings.stratum_password));
+    json_object_set_new(message, "params", params);
+    int ret = send_json(ses, message);
+    json_decref(message);
+    return ret;
 }
 
 static int decode_pkg(nw_ses *ses, void *data, size_t max)
@@ -359,6 +443,34 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
     char *request_data = data;
     request_data[size - 1] = '\0';
     log_trace("peer: %s, recv: %s", nw_sock_human_addr(&ses->peer_addr), request_data);
+
+    if (is_standard_stratum()) {
+        json_t *method = json_object_get(request, "method");
+        if (method && json_is_string(method)) {
+            const char *name = json_string_value(method);
+            if (strcmp(name, "mining.notify") == 0) {
+                if (on_standard_job(json_object_get(request, "params")) < 0)
+                    log_error("standard mining.notify rejected");
+            } else if (strcmp(name, "mining.set_difficulty") == 0) {
+                json_t *params = json_object_get(request, "params");
+                json_t *diff = json_is_array(params) ? json_array_get(params, 0) : NULL;
+                if (json_is_number(diff)) settings.diff_default = (int)json_number_value(diff);
+            }
+        } else if (json_object_get(request, "result") && json_is_array(json_object_get(request, "result"))) {
+            json_t *result = json_object_get(request, "result");
+            json_t *en1 = json_array_get(result, 1);
+            json_t *en2 = json_array_get(result, 2);
+            if (json_is_string(en1) && json_is_integer(en2)) {
+                if (upstream_extra_nonce1) sdsfree(upstream_extra_nonce1);
+                upstream_extra_nonce1 = sdsnew(json_string_value(en1));
+                settings.extra_nonce2_size = json_integer_value(en2);
+                send_authorize(ses); agent_status = true;
+                log_info("standard stratum subscribed: extranonce1_size=%zu extranonce2_size=%d", sdslen(upstream_extra_nonce1) / 2, settings.extra_nonce2_size);
+            }
+        }
+        json_decref(request);
+        return;
+    }
 
     if (json_object_get(request, "id") == NULL) {
         int ret = on_job_update(request);
@@ -571,6 +683,8 @@ struct job *find_job(const char *job_id)
 
 sds get_real_coinbase1(struct job *job, char *user, uint32_t nonce_id)
 {
+    if (is_standard_stratum())
+        return sdsnewlen(job->coinbase1_bin, sdslen(job->coinbase1_bin));
     size_t left_size = 100 - 5 - 1 - 19;
     if (sdslen(job->coinbaseaux_bin)) {
         left_size -= (1 + sdslen(job->coinbaseaux_bin));
@@ -640,6 +754,16 @@ int is_stratum_ok(void)
     return agent_status;
 }
 
+int is_standard_stratum(void)
+{
+    return settings.stratum_protocol && strcmp(settings.stratum_protocol, "standard_stratum") == 0;
+}
+
+const char *get_upstream_extra_nonce1(void)
+{
+    return upstream_extra_nonce1 ? upstream_extra_nonce1 : "";
+}
+
 int submit_sync(uint32_t miner_id, uint32_t nonce_id, char *extra_nonce1, int difficulty)
 {
     json_t *message = json_object();
@@ -664,6 +788,14 @@ int submit_share(uint32_t miner_id, json_t *share, uint32_t version_mask_svr, ui
 {
     json_t *message = json_object();
     json_object_set_new(message, "id", json_integer(current_timestamp() * 1000));
+    if (is_standard_stratum()) {
+        json_object_set_new(message, "method", json_string("mining.submit"));
+        json_t *params = json_array();
+        json_array_append_new(params, json_string(settings.stratum_user));
+        for (int i = 1; i < 5; ++i) json_array_append(params, json_array_get(share, i));
+        json_object_set_new(message, "params", params);
+        send_json(&clt->ses, message); json_decref(message); return 0;
+    }
     json_object_set_new(message, "method", json_string("agent.submit"));
 
     json_t *params = json_array();

@@ -51,6 +51,26 @@ int do_load_config(json_t *root)
         printf("load stratum_port config fail: %d\n", ret);
         return -__LINE__;
     }
+    ret = read_cfg_str(root, "stratum_protocol", &settings.stratum_protocol, "viabtc_agent");
+    if (ret < 0) {
+        printf("load stratum_protocol config fail: %d\n", ret);
+        return -__LINE__;
+    }
+    ret = read_cfg_str(root, "stratum_user", &settings.stratum_user, "");
+    if (ret < 0) {
+        printf("load stratum_user config fail: %d\n", ret);
+        return -__LINE__;
+    }
+    ret = read_cfg_str(root, "stratum_password", &settings.stratum_password, "");
+    if (ret < 0) {
+        printf("load stratum_password config fail: %d\n", ret);
+        return -__LINE__;
+    }
+    ret = read_cfg_int(root, "extra_nonce2_size", &settings.extra_nonce2_size, false, 8);
+    if (ret < 0 || settings.extra_nonce2_size < 1 || settings.extra_nonce2_size > 16) {
+        printf("invalid extra_nonce2_size\n");
+        return -__LINE__;
+    }
     ret = read_cfg_int(root, "worker_num", &settings.worker_num, true, 0);
     if (ret < 0) {
         printf("load worker_num config fail: %d\n", ret);

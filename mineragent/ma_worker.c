@@ -24,6 +24,12 @@ static uint64_t extra_nonce1_counter;
 # define MAX_WORKER_NAME_LEN        64
 # define MAX_USER_AGENT_LEN         64
 # define EXTRA_NONCE2_SIZE          8
+
+static int extra_nonce2_size(void)
+{
+    return settings.stratum_protocol && strcmp(settings.stratum_protocol, "standard_stratum") == 0
+        ? settings.extra_nonce2_size : EXTRA_NONCE2_SIZE;
+}
 //recommended, BIP9 security
 # define VERSION_MASK_DEFAULT       536862720
 
@@ -346,7 +352,7 @@ static int handle_subscribe(nw_ses *ses, struct client_info *info, json_t *id, j
     json_t *result = json_array();
     json_array_append_new(result, subscriptions);
     json_array_append_new(result, json_string(info->extra_nonce1));
-    json_array_append_new(result, json_integer(EXTRA_NONCE2_SIZE));
+    json_array_append_new(result, json_integer(extra_nonce2_size()));
 
     json_t *message = json_object();
     json_object_set(message, "id", id);
@@ -479,7 +485,7 @@ static int handle_authorize(nw_ses *ses, struct client_info *info, json_t *id, j
 
 static int get_block_head(char *head, struct job *job, struct client_info *info, const char *extra_nonce2, const char *ntime, const char *nonce, uint32_t version_mask)
 {
-    if (strlen(extra_nonce2) != EXTRA_NONCE2_SIZE * 2)
+    if (strlen(extra_nonce2) != extra_nonce2_size() * 2)
         return -__LINE__;
     if (strlen(ntime) != 8)
         return -__LINE__;
@@ -541,7 +547,7 @@ static int handle_submit(nw_ses *ses, struct client_info *info, json_t *id, json
         return -__LINE__;
     }
     json_t *extra_nonce2 = json_array_get(params, 2);
-    if (!extra_nonce2 || !json_is_string(extra_nonce2) || strlen(json_string_value(extra_nonce2)) != EXTRA_NONCE2_SIZE * 2) {
+    if (!extra_nonce2 || !json_is_string(extra_nonce2) || strlen(json_string_value(extra_nonce2)) != extra_nonce2_size() * 2) {
         return -__LINE__;
     }
     json_t *ntime = json_array_get(params, 3);
@@ -762,7 +768,11 @@ static void worker_on_new_connection(nw_ses *ses)
     // generate nonce 
     uint64_t nonce = ++extra_nonce1_counter;
     info->nonce_id = nonce >> 32;
-    sprintf(info->extra_nonce1, "%08x", (uint32_t)nonce);
+    if (is_standard_stratum()) {
+        snprintf(info->extra_nonce1, sizeof(info->extra_nonce1), "%s", get_upstream_extra_nonce1());
+    } else {
+        sprintf(info->extra_nonce1, "%08x", (uint32_t)nonce);
+    }
 
     // generate miner id
     info->miner_id = ++miner_id_counter;
