@@ -529,7 +529,8 @@ static int init_clt(void)
         return -__LINE__;
     }
     cfg.max_pkg_size = 502400;
-    cfg.reconnect_timeout = 3;
+    /* Standard pools may throttle rapid reconnects after a remote close. */
+    cfg.reconnect_timeout = is_standard_stratum() ? 15 : 3;
 
     nw_clt_type type;
     memset(&type, 0, sizeof(type));
